@@ -1,19 +1,19 @@
 # relayd
 
-A small webhook reliability daemon. Point your webhook senders at relayd; it persists every event before acknowledging, delivers to your destination with exponential-backoff retries, dead-letters what can't be delivered, and lets you replay anything. One Go binary, one SQLite file, no other infrastructure.
+A small webhook reliability daemon. Point your webhook senders at relayd; it persists every event before acknowledging, delivers to your destination with exponential-backoff retries, dead-letters what can't be delivered, and lets you replay anything. One Go binary backed by PostgreSQL.
 
-The contract: **once relayd returns 200, the event is on disk and will be delivered at least once** — through destination downtime, relayd restarts, or crashes mid-flight.
+The contract: **once relayd returns 200, the event is committed and will be delivered at least once** — through destination downtime, relayd restarts, or crashes mid-flight.
 
 ## How it works
 
 ```
-sender ──POST──▶ /in/{endpoint} ──▶ SQLite (durable) ──▶ delivery worker ──▶ destination
+sender ──POST──▶ /in/{endpoint} ──▶ PostgreSQL ──▶ delivery worker ──▶ destination
                      │ 200 fast                              │ retries w/ backoff
                                                              ▼
                                                         dead letter ──▶ replay
 ```
 
-- **Ack after persist.** The ingest handler writes to SQLite before returning 200.
+- **Ack after persist.** The ingest handler writes to PostgreSQL before returning 200.
 - **At-least-once delivery.** A worker claims due events, POSTs them to the destination, and records every attempt. Non-2xx or transport errors reschedule with backoff (5s, 30s, 2m, 10m, 30m); after 5 failed attempts the event goes to `dead`.
 - **Byte-for-byte payloads.** Bodies are stored and forwarded as raw bytes with the original headers, so sender signatures (`Stripe-Signature`, `X-Hub-Signature-256`, …) still verify at your destination.
 - **Crash recovery.** On boot, any event stuck in `delivering` is requeued.
@@ -22,7 +22,9 @@ sender ──POST──▶ /in/{endpoint} ──▶ SQLite (durable) ──▶ d
 ## Quickstart
 
 ```sh
-go build -o relayd .
+export DATABASE_URL='postgresql://user:password@host/relayd?sslmode=require'
+
+go build -o relayd ./cmd/relayd
 
 # create a tenant — prints your API key once
 ./relayd create-tenant "me"
@@ -68,6 +70,40 @@ RELAYD_BACKOFF=2,4 ./relayd serve &               # fast retries for demo
 
 Kill relayd mid-retry and restart it — delivery resumes where it left off.
 
+## Deploy on Koyeb with Neon
+
+1. Push this repository to GitHub.
+2. In Koyeb, create a Web Service from the GitHub repository and choose the Free Instance.
+3. Add your Neon connection string as a Koyeb secret named `DATABASE_URL`.
+4. Expose port `8080` over HTTP with the route `/`.
+5. Deploy. Koyeb builds the included `Dockerfile` and supplies `PORT` automatically.
+
+Create your first tenant locally using the same Neon connection string. The command prints the API key only once:
+
+```sh
+go run ./cmd/relayd create-tenant "me"
+```
+
+Never commit `DATABASE_URL` or the generated API key.
+
+## Project layout
+
+```text
+cmd/
+  relayd/                application entry point
+  flaky/                 local retry test receiver
+internal/
+  api/                   HTTP routes and handlers
+  database/              PostgreSQL connection and migrations
+    migrations/          versioned Goose SQL migrations
+  identity/              ULIDs and API-key hashing
+  worker/                delivery and retry loop
+```
+
+## Database migrations
+
+SQL migrations are embedded into the binary and applied by Goose when `relayd` starts. To change the schema, add the next sequential file under `internal/database/migrations`, such as `00002_add_event_expiry.sql`, with `-- +goose Up` and `-- +goose Down` sections.
+
 ## API
 
 | Route | Auth | Purpose |
@@ -85,8 +121,9 @@ Auth is per-tenant Bearer keys (`rlyd_...`), stored as SHA-256 hashes. All manag
 
 | Env var | Default | |
 |---|---|---|
-| `RELAYD_DB` | `relayd.db` | SQLite path |
-| `RELAYD_ADDR` | `:8080` | listen address |
+| `DATABASE_URL` | required | PostgreSQL connection string |
+| `PORT` | `8080` | platform-provided port |
+| `RELAYD_ADDR` | `:$PORT` | optional full listen-address override |
 | `RELAYD_BACKOFF` | `5,30,120,600,1800` | retry delays in seconds |
 
 ## Non-goals (for now)
