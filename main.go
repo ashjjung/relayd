@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"os"
 	"time"
+
+	"relayd/internal/database"
 )
 
 func main() {
@@ -22,7 +24,9 @@ func main() {
 	if databaseURL == "" {
 		log.Fatal("DATABASE_URL is required")
 	}
-	db, err := openDB(databaseURL)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	db, err := database.Open(ctx, databaseURL)
 	if err != nil {
 		log.Fatalf("open db: %v", err)
 	}
