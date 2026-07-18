@@ -1,4 +1,4 @@
-package main
+package worker
 
 import (
 	"bytes"
@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"relayd/internal/identity"
 )
 
 const (
@@ -39,18 +41,18 @@ func init() {
 	}
 }
 
-type worker struct {
+type Worker struct {
 	db     *sql.DB
 	client *http.Client
 }
 
-func newWorker(db *sql.DB) *worker {
-	return &worker{db: db, client: &http.Client{Timeout: deliveryTimeout}}
+func New(db *sql.DB) *Worker {
+	return &Worker{db: db, client: &http.Client{Timeout: deliveryTimeout}}
 }
 
-// recoverStale requeues events left in 'delivering' by a crash. Run once at boot,
+// RecoverStale requeues events left in 'delivering' by a crash. Run once at boot,
 // before the worker starts: at-least-once delivery survives any restart.
-func (w *worker) recoverStale() {
+func (w *Worker) RecoverStale() {
 	res, err := w.db.Exec(`UPDATE events SET status = 'pending' WHERE status = 'delivering'`)
 	if err != nil {
 		log.Fatalf("recover stale events: %v", err)
@@ -60,7 +62,8 @@ func (w *worker) recoverStale() {
 	}
 }
 
-func (w *worker) run(ctx context.Context) {
+// Run processes due events until the context is canceled.
+func (w *Worker) Run(ctx context.Context) {
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 	for {
@@ -81,7 +84,7 @@ type claimedEvent struct {
 	destinationURL string
 }
 
-func (w *worker) deliverDue() {
+func (w *Worker) deliverDue() {
 	events, err := w.claim()
 	if err != nil {
 		log.Printf("claim: %v", err)
@@ -92,7 +95,7 @@ func (w *worker) deliverDue() {
 	}
 }
 
-func (w *worker) claim() ([]claimedEvent, error) {
+func (w *Worker) claim() ([]claimedEvent, error) {
 	rows, err := w.db.Query(`
 		WITH due AS (
 			SELECT id
@@ -134,7 +137,7 @@ var skipHeaders = map[string]bool{
 	"Accept-Encoding": true, "Transfer-Encoding": true, "Upgrade": true,
 }
 
-func (w *worker) deliver(ev claimedEvent) {
+func (w *Worker) deliver(ev claimedEvent) {
 	attemptNum := ev.attemptCount + 1
 
 	req, err := http.NewRequest(http.MethodPost, ev.destinationURL, bytes.NewReader(ev.payload))
@@ -171,7 +174,7 @@ func (w *worker) deliver(ev claimedEvent) {
 	w.recordOutcome(ev, attemptNum, resp.StatusCode, string(body), durationMS, "")
 }
 
-func (w *worker) recordOutcome(ev claimedEvent, attemptNum, statusCode int, respBody string, durationMS int64, errMsg string) {
+func (w *Worker) recordOutcome(ev claimedEvent, attemptNum, statusCode int, respBody string, durationMS int64, errMsg string) {
 	now := time.Now().Unix()
 
 	tx, err := w.db.Begin()
@@ -184,7 +187,7 @@ func (w *worker) recordOutcome(ev claimedEvent, attemptNum, statusCode int, resp
 	if _, err := tx.Exec(`
 		INSERT INTO attempts (id, event_id, status_code, response_body, duration_ms, error, attempted_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		newID(), ev.id, statusCode, respBody, durationMS, errMsg, now); err != nil {
+		identity.NewID(), ev.id, statusCode, respBody, durationMS, errMsg, now); err != nil {
 		log.Printf("record attempt: %v", err)
 		return
 	}

@@ -9,7 +9,10 @@ import (
 	"os"
 	"time"
 
+	"relayd/internal/api"
 	"relayd/internal/database"
+	"relayd/internal/identity"
+	"relayd/internal/worker"
 )
 
 func main() {
@@ -55,13 +58,13 @@ func serve(db *sql.DB) {
 		}
 	}
 
-	wrk := newWorker(db)
-	wrk.recoverStale()
-	go wrk.run(context.Background())
+	wrk := worker.New(db)
+	wrk.RecoverStale()
+	go wrk.Run(context.Background())
 
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           (&server{db: db}).routes(),
+		Handler:           api.NewHandler(db),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	log.Printf("listening on %s", addr)
@@ -71,8 +74,8 @@ func serve(db *sql.DB) {
 }
 
 func createTenant(db *sql.DB, name string) {
-	id := newID()
-	raw, hash := newAPIKey()
+	id := identity.NewID()
+	raw, hash := identity.NewAPIKey()
 	now := time.Now().Unix()
 
 	tx, err := db.Begin()

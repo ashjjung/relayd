@@ -1,4 +1,4 @@
-package main
+package identity
 
 import (
 	"crypto/rand"
@@ -8,21 +8,21 @@ import (
 	"github.com/oklog/ulid/v2"
 )
 
-func newID() string {
+func NewID() string {
 	return ulid.Make().String()
 }
 
-// newAPIKey returns the raw key (shown once) and its stored hash.
-func newAPIKey() (raw, hash string) {
+// NewAPIKey returns the raw key (shown once) and its stored hash.
+func NewAPIKey() (raw, hash string) {
 	b := make([]byte, 24)
 	if _, err := rand.Read(b); err != nil {
 		panic(err)
 	}
 	raw = "rlyd_" + hex.EncodeToString(b)
-	return raw, hashKey(raw)
+	return raw, HashKey(raw)
 }
 
-func hashKey(raw string) string {
+func HashKey(raw string) string {
 	sum := sha256.Sum256([]byte(raw))
 	return hex.EncodeToString(sum[:])
 }

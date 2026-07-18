@@ -1,4 +1,4 @@
-package main
+package api
 
 import (
 	"context"
@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"relayd/internal/identity"
 )
 
 const maxPayloadBytes = 1 << 20 // 1 MiB
@@ -20,6 +22,10 @@ const ctxTenantID ctxKey = 0
 
 type server struct {
 	db *sql.DB
+}
+
+func NewHandler(db *sql.DB) http.Handler {
+	return (&server{db: db}).routes()
 }
 
 func (s *server) routes() http.Handler {
@@ -47,7 +53,7 @@ func (s *server) auth(next http.HandlerFunc) http.Handler {
 			return
 		}
 		var tenantID string
-		err := s.db.QueryRow(`SELECT tenant_id FROM api_keys WHERE key_hash = $1`, hashKey(raw)).Scan(&tenantID)
+		err := s.db.QueryRow(`SELECT tenant_id FROM api_keys WHERE key_hash = $1`, identity.HashKey(raw)).Scan(&tenantID)
 		if errors.Is(err, sql.ErrNoRows) {
 			jsonError(w, http.StatusUnauthorized, "invalid api key")
 			return
@@ -91,7 +97,7 @@ func (s *server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	headers, _ := json.Marshal(r.Header)
-	id := newID()
+	id := identity.NewID()
 	now := time.Now().Unix()
 
 	// The contract: 200 means the event is on disk. Persist before responding.
@@ -124,7 +130,7 @@ func (s *server) handleCreateEndpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id := newID()
+	id := identity.NewID()
 	_, err := s.db.Exec(`INSERT INTO endpoints (id, tenant_id, name, destination_url, created_at) VALUES ($1, $2, $3, $4, $5)`,
 		id, tenantID(r), req.Name, req.DestinationURL, time.Now().Unix())
 	if err != nil {
