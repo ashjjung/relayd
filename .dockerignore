@@ -1,0 +1,4 @@
+.git
+.gitignore
+relayd
+relayd.db*
