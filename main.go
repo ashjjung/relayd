@@ -18,11 +18,11 @@ func main() {
 		usage()
 	}
 
-	dbPath := os.Getenv("RELAYD_DB")
-	if dbPath == "" {
-		dbPath = "relayd.db"
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		log.Fatal("DATABASE_URL is required")
 	}
-	db, err := openDB(dbPath)
+	db, err := openDB(databaseURL)
 	if err != nil {
 		log.Fatalf("open db: %v", err)
 	}
@@ -44,7 +44,11 @@ func main() {
 func serve(db *sql.DB) {
 	addr := os.Getenv("RELAYD_ADDR")
 	if addr == "" {
-		addr = ":8080"
+		if port := os.Getenv("PORT"); port != "" {
+			addr = ":" + port
+		} else {
+			addr = ":8080"
+		}
 	}
 
 	wrk := newWorker(db)
@@ -56,7 +60,7 @@ func serve(db *sql.DB) {
 		Handler:           (&server{db: db}).routes(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
-	log.Printf("listening on %s (db=%s)", addr, os.Getenv("RELAYD_DB"))
+	log.Printf("listening on %s", addr)
 	if err := srv.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
@@ -71,10 +75,10 @@ func createTenant(db *sql.DB, name string) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	if _, err := tx.Exec(`INSERT INTO tenants (id, name, created_at) VALUES (?, ?, ?)`, id, name, now); err != nil {
+	if _, err := tx.Exec(`INSERT INTO tenants (id, name, created_at) VALUES ($1, $2, $3)`, id, name, now); err != nil {
 		log.Fatalf("create tenant: %v", err)
 	}
-	if _, err := tx.Exec(`INSERT INTO api_keys (key_hash, tenant_id, created_at) VALUES (?, ?, ?)`, hash, id, now); err != nil {
+	if _, err := tx.Exec(`INSERT INTO api_keys (key_hash, tenant_id, created_at) VALUES ($1, $2, $3)`, hash, id, now); err != nil {
 		log.Fatalf("create api key: %v", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -92,8 +96,8 @@ usage:
   relayd create-tenant <name>   create a tenant, print its API key (shown once)
 
 env:
-  RELAYD_DB       sqlite path (default: relayd.db)
-  RELAYD_ADDR     listen address (default: :8080)
+  DATABASE_URL     PostgreSQL connection string (required)
+  RELAYD_ADDR     listen address (default: PORT, then :8080)
   RELAYD_BACKOFF  retry delays in seconds, e.g. "2,4,8" (default: 5,30,120,600,1800)`)
 	os.Exit(2)
 }

@@ -74,11 +74,11 @@ func (w *worker) run(ctx context.Context) {
 }
 
 type claimedEvent struct {
-	id, endpointID  string
-	payload         []byte
-	headers         string
-	attemptCount    int
-	destinationURL  string
+	id, endpointID string
+	payload        []byte
+	headers        string
+	attemptCount   int
+	destinationURL string
 }
 
 func (w *worker) deliverDue() {
@@ -94,13 +94,19 @@ func (w *worker) deliverDue() {
 
 func (w *worker) claim() ([]claimedEvent, error) {
 	rows, err := w.db.Query(`
-		UPDATE events SET status = 'delivering'
-		WHERE id IN (
-			SELECT id FROM events
-			WHERE status = 'pending' AND next_attempt_at <= ?
-			ORDER BY next_attempt_at LIMIT ?
+		WITH due AS (
+			SELECT id
+			FROM events
+			WHERE status = 'pending' AND next_attempt_at <= $1
+			ORDER BY next_attempt_at
+			LIMIT $2
+			FOR UPDATE SKIP LOCKED
 		)
-		RETURNING id, endpoint_id, payload, headers, attempt_count`,
+		UPDATE events AS e
+		SET status = 'delivering'
+		FROM due, endpoints AS ep
+		WHERE e.id = due.id AND ep.id = e.endpoint_id
+		RETURNING e.id, e.endpoint_id, e.payload, e.headers, e.attempt_count, ep.destination_url`,
 		time.Now().Unix(), claimBatchSize)
 	if err != nil {
 		return nil, err
@@ -110,7 +116,7 @@ func (w *worker) claim() ([]claimedEvent, error) {
 	var out []claimedEvent
 	for rows.Next() {
 		var ev claimedEvent
-		if err := rows.Scan(&ev.id, &ev.endpointID, &ev.payload, &ev.headers, &ev.attemptCount); err != nil {
+		if err := rows.Scan(&ev.id, &ev.endpointID, &ev.payload, &ev.headers, &ev.attemptCount, &ev.destinationURL); err != nil {
 			return nil, err
 		}
 		out = append(out, ev)
@@ -119,12 +125,6 @@ func (w *worker) claim() ([]claimedEvent, error) {
 		return nil, err
 	}
 
-	for i := range out {
-		if err := w.db.QueryRow(`SELECT destination_url FROM endpoints WHERE id = ?`, out[i].endpointID).
-			Scan(&out[i].destinationURL); err != nil {
-			return nil, err
-		}
-	}
 	return out, nil
 }
 
@@ -183,7 +183,7 @@ func (w *worker) recordOutcome(ev claimedEvent, attemptNum, statusCode int, resp
 
 	if _, err := tx.Exec(`
 		INSERT INTO attempts (id, event_id, status_code, response_body, duration_ms, error, attempted_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 		newID(), ev.id, statusCode, respBody, durationMS, errMsg, now); err != nil {
 		log.Printf("record attempt: %v", err)
 		return
@@ -194,16 +194,16 @@ func (w *worker) recordOutcome(ev claimedEvent, attemptNum, statusCode int, resp
 	args := []any{}
 	switch {
 	case success:
-		q = `UPDATE events SET status = 'delivered', attempt_count = ? WHERE id = ?`
+		q = `UPDATE events SET status = 'delivered', attempt_count = $1 WHERE id = $2`
 		args = append(args, attemptNum, ev.id)
 		log.Printf("event %s delivered (attempt %d, %d, %dms)", ev.id, attemptNum, statusCode, durationMS)
 	case attemptNum >= maxAttempts:
-		q = `UPDATE events SET status = 'dead', attempt_count = ? WHERE id = ?`
+		q = `UPDATE events SET status = 'dead', attempt_count = $1 WHERE id = $2`
 		args = append(args, attemptNum, ev.id)
 		log.Printf("event %s DEAD after %d attempts", ev.id, attemptNum)
 	default:
 		delay := backoff[min(attemptNum-1, len(backoff)-1)]
-		q = `UPDATE events SET status = 'pending', attempt_count = ?, next_attempt_at = ? WHERE id = ?`
+		q = `UPDATE events SET status = 'pending', attempt_count = $1, next_attempt_at = $2 WHERE id = $3`
 		args = append(args, attemptNum, now+int64(delay.Seconds()), ev.id)
 		log.Printf("event %s attempt %d failed (code=%d err=%q), retry in %s", ev.id, attemptNum, statusCode, errMsg, delay)
 	}

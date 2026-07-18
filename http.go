@@ -47,7 +47,7 @@ func (s *server) auth(next http.HandlerFunc) http.Handler {
 			return
 		}
 		var tenantID string
-		err := s.db.QueryRow(`SELECT tenant_id FROM api_keys WHERE key_hash = ?`, hashKey(raw)).Scan(&tenantID)
+		err := s.db.QueryRow(`SELECT tenant_id FROM api_keys WHERE key_hash = $1`, hashKey(raw)).Scan(&tenantID)
 		if errors.Is(err, sql.ErrNoRows) {
 			jsonError(w, http.StatusUnauthorized, "invalid api key")
 			return
@@ -70,7 +70,7 @@ func (s *server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	endpointID := r.PathValue("endpoint")
 
 	var epTenant string
-	err := s.db.QueryRow(`SELECT tenant_id FROM endpoints WHERE id = ?`, endpointID).Scan(&epTenant)
+	err := s.db.QueryRow(`SELECT tenant_id FROM endpoints WHERE id = $1`, endpointID).Scan(&epTenant)
 	if errors.Is(err, sql.ErrNoRows) {
 		jsonError(w, http.StatusNotFound, "unknown endpoint")
 		return
@@ -97,7 +97,7 @@ func (s *server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	// The contract: 200 means the event is on disk. Persist before responding.
 	_, err = s.db.Exec(`
 		INSERT INTO events (id, tenant_id, endpoint_id, payload, headers, status, next_attempt_at, created_at)
-		VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)`,
+		VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7)`,
 		id, epTenant, endpointID, body, string(headers), now, now)
 	if err != nil {
 		log.Printf("ingest persist failed: %v", err)
@@ -125,7 +125,7 @@ func (s *server) handleCreateEndpoint(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id := newID()
-	_, err := s.db.Exec(`INSERT INTO endpoints (id, tenant_id, name, destination_url, created_at) VALUES (?, ?, ?, ?, ?)`,
+	_, err := s.db.Exec(`INSERT INTO endpoints (id, tenant_id, name, destination_url, created_at) VALUES ($1, $2, $3, $4, $5)`,
 		id, tenantID(r), req.Name, req.DestinationURL, time.Now().Unix())
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "create failed")
@@ -140,7 +140,7 @@ func (s *server) handleCreateEndpoint(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleListEndpoints(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.db.Query(`SELECT id, name, destination_url, created_at FROM endpoints WHERE tenant_id = ? ORDER BY created_at DESC`, tenantID(r))
+	rows, err := s.db.Query(`SELECT id, name, destination_url, created_at FROM endpoints WHERE tenant_id = $1 ORDER BY created_at DESC`, tenantID(r))
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -178,10 +178,10 @@ type eventJSON struct {
 }
 
 func (s *server) handleListEvents(w http.ResponseWriter, r *http.Request) {
-	q := `SELECT id, endpoint_id, status, attempt_count, next_attempt_at, created_at FROM events WHERE tenant_id = ?`
+	q := `SELECT id, endpoint_id, status, attempt_count, next_attempt_at, created_at FROM events WHERE tenant_id = $1`
 	args := []any{tenantID(r)}
 	if st := r.URL.Query().Get("status"); st != "" {
-		q += ` AND status = ?`
+		q += ` AND status = $2`
 		args = append(args, st)
 	}
 	q += ` ORDER BY created_at DESC LIMIT 100`
@@ -210,7 +210,7 @@ func (s *server) handleGetEvent(w http.ResponseWriter, r *http.Request) {
 	var payload []byte
 	err := s.db.QueryRow(`
 		SELECT id, endpoint_id, status, attempt_count, next_attempt_at, created_at, payload
-		FROM events WHERE id = ? AND tenant_id = ?`, r.PathValue("id"), tenantID(r)).
+		FROM events WHERE id = $1 AND tenant_id = $2`, r.PathValue("id"), tenantID(r)).
 		Scan(&e.ID, &e.EndpointID, &e.Status, &e.AttemptCount, &e.NextAttemptAt, &e.CreatedAt, &payload)
 	if errors.Is(err, sql.ErrNoRows) {
 		jsonError(w, http.StatusNotFound, "no such event")
@@ -224,7 +224,7 @@ func (s *server) handleGetEvent(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := s.db.Query(`
 		SELECT status_code, response_body, duration_ms, error, attempted_at
-		FROM attempts WHERE event_id = ? ORDER BY attempted_at ASC`, e.ID)
+		FROM attempts WHERE event_id = $1 ORDER BY attempted_at ASC`, e.ID)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -252,8 +252,8 @@ func (s *server) handleGetEvent(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) handleReplay(w http.ResponseWriter, r *http.Request) {
 	res, err := s.db.Exec(`
-		UPDATE events SET status = 'pending', attempt_count = 0, next_attempt_at = ?
-		WHERE id = ? AND tenant_id = ? AND status IN ('delivered', 'dead')`,
+		UPDATE events SET status = 'pending', attempt_count = 0, next_attempt_at = $1
+		WHERE id = $2 AND tenant_id = $3 AND status IN ('delivered', 'dead')`,
 		time.Now().Unix(), r.PathValue("id"), tenantID(r))
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "replay failed")
