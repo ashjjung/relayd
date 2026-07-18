@@ -70,13 +70,13 @@ RELAYD_BACKOFF=2,4 ./relayd serve &               # fast retries for demo
 
 Kill relayd mid-retry and restart it — delivery resumes where it left off.
 
-## Deploy on Koyeb with Neon
+## Deploy on Railway with Neon
 
 1. Push this repository to GitHub.
-2. In Koyeb, create a Web Service from the GitHub repository and choose the Free Instance.
-3. Add your Neon connection string as a Koyeb secret named `DATABASE_URL`.
-4. Expose port `8080` over HTTP with the route `/`.
-5. Deploy. Koyeb builds the included `Dockerfile` and supplies `PORT` automatically.
+2. In Railway, create a project with **Deploy from GitHub repo** and select this repository.
+3. Add your Neon connection string as a sealed service variable named `DATABASE_URL`.
+4. Deploy. Railway builds the included `Dockerfile` and supplies `PORT` automatically.
+5. Under **Settings → Networking**, generate a public domain.
 
 Create your first tenant locally using the same Neon connection string. The command prints the API key only once:
 
