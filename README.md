@@ -108,6 +108,7 @@ SQL migrations are embedded into the binary and applied by Goose when `relayd` s
 
 | Route | Auth | Purpose |
 |---|---|---|
+| `GET /healthz` | none | process health check |
 | `POST /in/{endpoint_id}` | none (unguessable ID is the credential) | ingest an event |
 | `POST /endpoints` | Bearer | register a destination URL |
 | `GET /endpoints` | Bearer | list endpoints |
