@@ -1,0 +1,4 @@
+/relayd
+*.db
+*.db-wal
+*.db-shm
